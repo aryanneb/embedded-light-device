@@ -6,107 +6,102 @@ import pyaudio
 import librosa
 from collections import deque
 
-# Configuration
+# setup vibes
 NUM_PIXELS = 21
 PIXEL_ORDER = neopixel.GRB
-DELAY = 0.01  # Small delay for responsiveness
-SENSITIVITY = 4.0  # Sensitivity multiplier for brightness
-BRIGHTNESS_SCALE = 1.5  # Scaling for brightness increase with more LEDs lit
-DECAY_RATE = 7.0  # Decay rate for brightness drop
-SMOOTHING_WINDOW_SIZE = 10  # Window size for smoothing decibel changes
-COLOR_SMOOTHING = 0.1  # Smoothing factor for color transitions (0-1)
+DELAY = 0.01
+SENSITIVITY = 4.0
+BRIGHTNESS_SCALE = 1.5
+DECAY_RATE = 7.0
+SMOOTHING_WINDOW_SIZE = 10
+COLOR_SMOOTHING = 0.25
 
-# Frequency bands (in Hz)
-LOW_FREQ_BAND = (20, 250)    # Low frequencies (bass)
-MID_FREQ_BAND = (250, 2000)  # Mid frequencies
-HIGH_FREQ_BAND = (2000, 8000)  # High frequencies (treble)
+# frequency bands (where the bass, mids, and treble chill)
+LOW_FREQ_BAND = (100, 400)
+MID_FREQ_BAND = (400, 700)
+HIGH_FREQ_BAND = (700, 1000)
 
-# Set up NeoPixel SPI
+# neopixel setup
 spi = board.SPI()
 pixels = neopixel.NeoPixel_SPI(spi, NUM_PIXELS, pixel_order=PIXEL_ORDER, auto_write=False)
 
-# Audio settings
-CHUNK = 1024  # Number of audio samples per frame
-FORMAT = pyaudio.paInt16  # Format for PyAudio
-CHANNELS = 1  # Mono audio
-RATE = 44100  # Sample rate
+# audio config
+CHUNK = 1024
+FORMAT = pyaudio.paInt16
+CHANNELS = 1
+RATE = 44100
 
-# Initialize PyAudio
+# start audio stream
 p = pyaudio.PyAudio()
 stream = p.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True, frames_per_buffer=CHUNK)
 
-# Initialize smoothing for decibel readings and colors
+# smooth out decibel readings and color changes
 decibel_history = deque(maxlen=SMOOTHING_WINDOW_SIZE)
-current_color = (0, 0, 0)  # Default color
+current_color = (0, 0, 0)
 
 def get_volume_and_frequencies(data):
-    """Process audio data to calculate volume and frequency distribution."""
+    """get volume and freq details from the audio"""
     data = np.frombuffer(data, dtype=np.int16).astype(np.float32)
     
-    # Compute RMS for overall loudness
+    # rms for loudness check
     rms = np.sqrt(np.mean(np.square(data)))
     
-    # Compute STFT for frequency analysis
+    # stft for frequency analysis
     stft = np.abs(librosa.stft(data, n_fft=1024, hop_length=512))
     frequencies = librosa.fft_frequencies(sr=RATE, n_fft=1024)
     
-    # Sum energies in each frequency band
+    # sum up the energies in each freq band
     low_energy = np.sum(stft[(frequencies >= LOW_FREQ_BAND[0]) & (frequencies < LOW_FREQ_BAND[1])])
     mid_energy = np.sum(stft[(frequencies >= MID_FREQ_BAND[0]) & (frequencies < MID_FREQ_BAND[1])])
     high_energy = np.sum(stft[(frequencies >= HIGH_FREQ_BAND[0]) & (frequencies < HIGH_FREQ_BAND[1])])
     
-    # Compute weighted mean frequency
-    mean_frequencies = np.sum(stft * frequencies[:, None], axis=0) / np.sum(stft, axis=0)
-    mean_freq = np.mean(mean_frequencies)
-    
+    # convert rms to decibels, but keep it chill if it's silent
     if rms > 0:
-        # Convert RMS to decibels
         decibels = 20 * np.log10(rms)
     else:
-        decibels = 0  # Return 0 dB to indicate silence
+        decibels = 0
     
-    return decibels, low_energy, mid_energy, high_energy, mean_freq
+    return decibels, low_energy, mid_energy, high_energy
 
-def get_gradient_color(low_energy, mid_energy, high_energy):
-    """Create a gradient color based on frequency distribution."""
-    # Normalize energies to a 0-1 scale
+def get_rgb_color(low_energy, mid_energy, high_energy):
+    """map those frequency bands to rgb colors"""
     total_energy = low_energy + mid_energy + high_energy
     if total_energy == 0:
         return (0, 0, 0)
     
-    # Increase sensitivity by amplifying the ratios
+    # normalize those energies
     low_ratio = (low_energy / total_energy) ** 2
     mid_ratio = (mid_energy / total_energy) ** 2
     high_ratio = (high_energy / total_energy) ** 2
 
-    # Color blending: purple (low) -> blue (mid) -> teal (high)
+    # assign colors: red for low, green for mid, blue for high
     red = int(255 * low_ratio)
-    green = int(255 * high_ratio)
-    blue = int(128 * low_ratio + 255 * mid_ratio + 255 * high_ratio)
+    green = int(255 * mid_ratio)
+    blue = int(255 * high_ratio)
 
     return (red, green, blue)
 
 def smooth_color(new_color, old_color, smoothing_factor):
-    """Smoothly transition between colors using exponential moving average."""
+    """smooth out color transitions like a pro"""
     return tuple(int(old_c + smoothing_factor * (new_c - old_c)) for new_c, old_c in zip(new_color, old_color))
 
 def set_pixels_brightness_and_color(decibels, color):
-    """Adjust brightness and color based on decibel levels, with a center-outward color spread."""
+    """adjust brightness and color based on the loudness, spreading out from the center"""
     mid_point = NUM_PIXELS // 2
     
     for i in range(mid_point + 1):
-        sensitivity_scale = 1.0 - (i / mid_point)  # Center is most sensitive, outer edges are less
-        threshold = 40 + (i * 5)  # Lower thresholds for more sensitivity
+        sensitivity_scale = 1.0 - (i / mid_point)
+        threshold = 40 + (i * 5)
         
         if decibels >= threshold:
             brightness = int((decibels - threshold) * SENSITIVITY * sensitivity_scale * BRIGHTNESS_SCALE)
             brightness = max(min(brightness, 255), 0)
         else:
-            brightness = 0  # LED remains off if below threshold
+            brightness = 0
         
         scaled_color = tuple(int(c * (brightness / 255)) for c in color)
         
-        # Set LEDs symmetrically from the center
+        # set the leds, mirroring from the center
         if mid_point + i < NUM_PIXELS:
             pixels[mid_point + i] = scaled_color
         if mid_point - i >= 0:
@@ -114,29 +109,20 @@ def set_pixels_brightness_and_color(decibels, color):
     
     pixels.show()
 
-# Start processing real-time audio input with continuous updates
+# main loop: listen to the audio and update the lights in real-time
 while True:
     data = stream.read(CHUNK, exception_on_overflow=False)
     
-    # Calculate volume and frequency bands
-    decibels, low_energy, mid_energy, high_energy, mean_freq = get_volume_and_frequencies(data)
-    
-    # Get gradient color based on frequency bands
-    new_color = get_gradient_color(low_energy, mid_energy, high_energy)
-    
-    # Smooth the color transitions with EMA
+    decibels, low_energy, mid_energy, high_energy = get_volume_and_frequencies(data)
+    new_color = get_rgb_color(low_energy, mid_energy, high_energy)
     current_color = smooth_color(new_color, current_color, COLOR_SMOOTHING)
-    
-    # Add the current decibel reading to the history
     decibel_history.append(decibels)
     smoothed_decibels = np.mean(decibel_history)
-    
-    # Set pixels brightness and color based on the current decibels and frequencies
     set_pixels_brightness_and_color(smoothed_decibels, current_color)
     
-    time.sleep(DELAY)  # Short delay for responsiveness
+    time.sleep(DELAY)
 
-# Cleanup (optional, usually never reached in an infinite loop)
+# cleanup (but let's be real, this loop is infinite)
 stream.stop_stream()
 stream.close()
 p.terminate()
